@@ -1,0 +1,163 @@
+{
+  "payload_boundary": {
+    "low_entropy_start": "0x0",
+    "high_entropy_start": "0x57d000",
+    "low_entropy_size_human": "5.49 MB",
+    "high_entropy_size_human": "6.81 MB"
+  },
+  "data_section_start_pattern": {
+    "top_byte_values": [
+      [
+        "0x0",
+        3028,
+        "73.9%"
+      ],
+      [
+        "0xff",
+        1068,
+        "26.1%"
+      ]
+    ],
+    "pattern_note": "0x00 and 0xFF dominance suggests XOR-encoded or placeholder data"
+  },
+  "xor_ff_scan": {
+    "pe_headers_found": 0,
+    "positions": [],
+    "first_64_bytes_hex": "000000ffffffff00ffffffffffffff00ffff00ff00ffff0000ffffffffff00ffffff00ffffffffffffff00ffffff00ffffff00ffff000000ffff00ff0000ffff",
+    "entropy": 0.85
+  },
+  "xor_key_attempts": [
+    {
+      "key": "0x0",
+      "pe_headers_found": 0,
+      "result_entropy": 7.15,
+      "first_16_hex": "ceef8cd7b3740bf60b56bf64a3990541"
+    },
+    {
+      "key": "0xff",
+      "pe_headers_found": 0,
+      "result_entropy": 7.15,
+      "first_16_hex": "311073284c8bf409f4a9409b5c66fabe"
+    },
+    {
+      "key": "0xaa",
+      "pe_headers_found": 0,
+      "result_entropy": 7.15,
+      "first_16_hex": "6445267d19dea15ca1fc15ce0933afeb"
+    },
+    {
+      "key": "0x55",
+      "pe_headers_found": 0,
+      "result_entropy": 7.15,
+      "first_16_hex": "9bbad982e6215ea35e03ea31f6cc5014"
+    },
+    {
+      "key": "0x31",
+      "pe_headers_found": 0,
+      "result_entropy": 7.15,
+      "first_16_hex": "ffdebde682453ac73a678e5592a83470"
+    },
+    {
+      "key": "0x68",
+      "pe_headers_found": 0,
+      "result_entropy": 7.15,
+      "first_16_hex": "a687e4bfdb1c639e633ed70ccbf16d29"
+    },
+    {
+      "key": "0xe1",
+      "pe_headers_found": 0,
+      "result_entropy": 7.15,
+      "first_16_hex": "2f0e6d365295ea17eab75e854278e4a0"
+    },
+    {
+      "key": "0x3d",
+      "pe_headers_found": 0,
+      "result_entropy": 7.15,
+      "first_16_hex": "f3d2b1ea8e4936cb366b82599ea4387c"
+    },
+    {
+      "key": "0x7a",
+      "pe_headers_found": 0,
+      "result_entropy": 7.15,
+      "first_16_hex": "b495f6adc90e718c712cc51ed9e37f3b"
+    },
+    {
+      "key": "0xb7",
+      "pe_headers_found": 0,
+      "result_entropy": 7.15,
+      "first_16_hex": "79583b6004c3bc41bce108d3142eb2f6"
+    },
+    {
+      "key": "0xf4",
+      "pe_headers_found": 0,
+      "result_entropy": 7.15,
+      "first_16_hex": "3a1b78234780ff02ffa24b90576df1b5"
+    },
+    {
+      "key": "0x6e",
+      "pe_headers_found": 0,
+      "result_entropy": 7.15,
+      "first_16_hex": "a081e2b9dd1a65986538d10acdf76b2f"
+    },
+    {
+      "key": "0xab",
+      "pe_headers_found": 0,
+      "result_entropy": 7.15,
+      "first_16_hex": "6544277c18dfa05da0fd14cf0832aeea"
+    }
+  ],
+  "first_byte_as_key": {
+    "value": "0xff",
+    "note": "Byte at offset 0 of .data section, used as XOR key in the cipher"
+  },
+  "position_dependent_xor": {
+    "decoded_first_64_hex": "ffff3d00850048ff0b00ce00910054ff17002500620060ffdc00e600a90000000000000000000000000000000000000000000000000000000000000000000000",
+    "original_first_64_hex": "ffffff00000000ff00000000000000ff0000ff00ff0000ffff0000000000ff000000ff00000000000000ff000000ff000000ff0000ffffff0000ff00ffff0000",
+    "key_byte": "0xff"
+  },
+  "payload_extracted": {
+    "file": "/home/kali/Downloads/sandbox/findings/encrypted_payload.bin",
+    "size_saved": "1 MB (first chunk)",
+    "total_payload_size": "6.81 MB",
+    "entropy": 7.957,
+    "first_32_hex": "ceef8cd7b3740bf60b56bf64a3990541cbe355897129275b2263b7e299cb167e",
+    "last_32_hex": "0000000000000000000000000000000000000000000000000000000000000000"
+  },
+  "encryption_analysis": {
+    "max_block_repetition_16byte": 1,
+    "likely_mode": "AES-CTR/ChaCha20 (no block repetition)",
+    "overall_entropy": 7.997,
+    "note": "High entropy with no block repetition suggests stream cipher or CTR mode encryption"
+  },
+  "low_entropy_structure": {
+    "ff_dense_blocks": 0,
+    "zero_dense_blocks": 481,
+    "ff_positions_sample": [],
+    "zero_positions_sample": [
+      "0xa00",
+      "0x1000",
+      "0x2400",
+      "0x2c00",
+      "0x2d00",
+      "0x3200",
+      "0x3500",
+      "0x3900",
+      "0x4400",
+      "0x4600"
+    ],
+    "interpretation": "The 0x00/0xFF interleaved pattern may be an encoded index table or lookup matrix used for payload substitution"
+  },
+  "low_entropy_xor_ff": {
+    "pe_headers_found": 0,
+    "entropy_after_xor": 0.85,
+    "first_64_hex": "000000ffffffff00ffffffffffffff00ffff00ff00ffff0000ffffffffff00ffffff00ffffffffffffff00ffffff00ffffff00ffff000000ffff00ff0000ffff",
+    "note": "XOR with 0xFF on the 0x00/0xFF region converts to all-0xFF/all-0x00 - no meaningful structure revealed"
+  },
+  "full_file_pe_scan": {
+    "total_pe_signatures": 1,
+    "positions": [
+      "0x0"
+    ],
+    "note": "Only the main PE header at expected offset - no embedded secondary PE found (payload fully encrypted)"
+  }
+}

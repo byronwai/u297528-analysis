@@ -1,0 +1,14 @@
+{
+  "decryption_success": true,
+  "algorithm": "AES-256-CBC",
+  "key_hex": "b1fa3fd02d8ec02302cf4ce7a46957f76eaaa7c5a73b3d2cb6bcb4a322593180",
+  "iv_hex": "815f73d17e0ab351296629a197d378a5",
+  "key_source": "Extracted from .data section at offsets 0x57c0e8 and 0x57c108",
+  "payload_offset": "0x57c120",
+  "payload_size": 7144464,
+  "output_file": "decrypted_payload.exe",
+  "output_md5": "e10a9bb09acb415e5dc8654b8593a45c",
+  "output_sha256": "d59e83b0be737896dec8b91c7a52f87e16f83e911af52826b98481b5c50f32b2",
+  "xor_constants_formula": "constant[i] = (0x3D * (i + 1)) & 0xFF",
+  "key_discovery_method": "IdllEntry disassembly analysis - traced LEA instructions to .data section addresses"
+}

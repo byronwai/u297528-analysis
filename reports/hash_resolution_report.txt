@@ -1,0 +1,97 @@
+======================================================================
+  API HASH RESOLUTION REPORT
+======================================================================
+
+--- Algorithm ---
+  Formula: hash = 0xe7A1; hash = hash * 0x21 + char
+  DLL names: Unicode WCHAR, converted to uppercase
+  Function names: ANSI chars, no case conversion
+
+--- Verification (Known Values) ---
+  NtCreateFile: 0x695b8977
+  NtWriteFile: 0x4d799fce
+  NtClose: 0x844c5e59
+  KERNEL32_DLL_uppercase: 0xc19131f1
+  KERNEL32_DLL_lowercase: 0xc3f68b11
+  NTDLL_DLL_uppercase: 0x40583309
+  NTDLL_DLL_lowercase: 0x44513809
+  IDLL_DLL_uppercase: 0x143a8af0
+  IDLL_DLL_lowercase: 0x88a56fd0
+
+--- Resolved Hashes ---
+  0x695b8977 -> Func: NtCreateFile
+  0x4d799fce -> Func: NtWriteFile
+  0x844c5e59 -> Func: NtClose
+  0x82a35258 -> Func: NtWaitForSingleObject
+  0x427392e6 -> Func: NtDelayExecution
+  0xeb7a1a75 -> Func: NtCreateUserProcess
+  0x40583309 -> DLL(Upper): ntdll.dll
+
+--- Unresolved Function Hashes ---
+  0x82a35258
+  0x427392e6
+  0xeb7a1a75
+  0x79468157
+  0x77a3ed30
+  0x5435a0bf
+  0xceb013a2
+
+--- Unresolved DLL Hashes ---
+  0x46ca3d07
+  0x40583309
+
+--- Likely Candidates for Unresolved ---
+  0x82a35258 ([0x180c51540]):
+    - NtWaitForSingleObject (for process monitoring)
+    - NtProtectVirtualMemory (for memory permission change)
+    - NtOpenFile (for opening existing file)
+    Purpose: syscall for waiting/protection/file opening
+
+  0x427392e6 ([0x180c51544]):
+    - NtDelayExecution (for sleep/timing)
+    - NtFreeVirtualMemory (for cleanup)
+    - NtSetInformationProcess (for process manipulation)
+    Purpose: syscall for delay/memory cleanup/process info
+
+  0xeb7a1a75 ([0x180c5153c]):
+    - NtCreateUserProcess (for spawning child process)
+    - NtOpenProcessToken (for token manipulation)
+    - NtAllocateVirtualMemory (for memory allocation)
+    Purpose: syscall for process creation/token/memory
+
+  0x79468157 ([0x180c51548]):
+    - RtlInitUnicodeString (for string init)
+    - LdrLoadDll (for DLL loading)
+    - NtOpenProcess (for process access)
+    Purpose: function pointer - likely for DLL loading or process operations
+
+  0x77a3ed30 ([0x180c51550]):
+    - RtlAdjustPrivilege (for privilege escalation)
+    - NtAdjustPrivilegesToken (for token adjustment)
+    - LdrGetProcedureAddress (for function resolution)
+    Purpose: function pointer - likely for privilege/API resolution
+
+  0x5435a0bf ([0x180c51558]):
+    - NtCreateSection (for shared memory)
+    - NtMapViewOfSection (for memory mapping)
+    - VirtualAlloc (for memory allocation)
+    Purpose: function pointer - likely for memory mapping
+
+  0xceb013a2 ([0x180c51560]):
+    - NtWriteVirtualMemory (for memory writing)
+    - NtCreateThreadEx (for thread creation)
+    - RtlCreateUserThread (for remote thread)
+    Purpose: function pointer - likely for code injection
+
+  0x46ca3d07 ():
+    - NTDLL.DLL (via alternate Unicode encoding)
+    - KERNEL32.DLL (via alternate path)
+    - api-ms-win-core-synch API set
+    Purpose: DLL hash - likely a core Windows module
+
+--- Note ---
+  The remaining unresolved hashes may correspond to:
+  - Functions with slightly different naming conventions
+  - Internal/undocumented ntdll functions
+  - Functions from the second resolved DLL module
+  Full resolution requires runtime emulation or sandbox execution

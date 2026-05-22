@@ -1,0 +1,113 @@
+======================================================================
+  MALWARE ANALYSIS REPORT: u297528.dat (idll.dll)
+======================================================================
+
+File: u297528.dat
+Size: 12911616 bytes (12.31 MB)
+MD5:  dbd8dbecaa80795c135137d69921fdba
+SHA256: e60ab99da105ee27ee09ea64ed8eb46d8edc92ee37f039dbc3e2bb9f587a33ba
+
+--- PE Header ---
+  pe_offset: 0xd8
+  machine: AMD64 (0x8664)
+  num_sections: 4
+  timestamp: 0x697b3982
+  timestamp_date: 2026-01-29 10:42:10
+  characteristics: 0x2022
+  optional_header_magic: 0x20b
+  pe_type: PE32+ (64-bit)
+  image_base: 0x180000000
+  entry_point_rva: 0x2820
+  image_size: 0xc53000
+  subsystem: Windows GUI
+  dll_characteristics: 0x160
+  nx_enabled: True
+  no_canary: True
+
+--- Sections ---
+  .text: size=12.0 KB, entropy=6.07
+  .rdata: size=2.0 KB, entropy=5.17
+  .data: size=12.30 MB, entropy=5.75 *** SUSPICIOUS
+  .pdata: size=0.5 KB, entropy=2.33
+
+--- Imports ---
+  KERNEL32.dll: 
+  Total imported: 0
+  Deliberately minimal import table (only 3 functions) - all other APIs resolved via hash-based PEB walking
+
+--- Exports ---
+  DLL Name: idll.dll
+  Functions: IdllEntry
+
+--- API Hash Resolution ---
+  Algorithm: hash = 0xe7A1; hash = hash * 0x21 + char
+  Resolved:
+    0x695b8977 -> NtCreateFile
+    0x4d799fce -> NtWriteFile
+    0x844c5e59 -> NtClose
+    0x40583309 -> NTDLL.DLL
+  Unresolved:
+    0x46ca3d07 -> unknown DLL
+
+    0x82a35258 -> unknown syscall
+
+    0x427392e6 -> unknown syscall
+
+    0xeb7a1a75 -> unknown syscall
+
+    0x79468157 -> unknown func ptr
+
+    0x77a3ed30 -> unknown func ptr
+
+    0x5435a0bf -> unknown func ptr
+
+    0xceb013a2 -> unknown func ptr
+
+--- Syscall Mechanism ---
+  Technique: Direct syscall (bypasses user-mode API hooks)
+  EDR Bypass: True
+  Stub addresses: 0x180003f30, 0x180003f3c, 0x180003f48, 0x180003f54, 0x180003f60, 0x180003f6c
+
+--- XOR Decryption ---
+  Function: 0x180001a10
+  Algorithm: Position-dependent XOR cipher
+  Formula: result[i] = (key_byte XOR input[i]) XOR position_constant[i]
+
+--- Execution Flow ---
+  DllMain: Minimal - calls DisableThreadLibraryCalls, returns 1
+  IdllEntry:
+    1. Check r8 != NULL and r8[0] == '1' (0x31)
+    2. Call init_func (0x180003da0) - resolve DLLs and syscall numbers
+    3. Build substitution/decode table on stack
+    4. Call XOR_decode (0x180001a10) - decode substitution table
+    5. Use decoded data + direct syscalls to drop/execute payload
+
+--- Malware Classification ---
+  Type: DLL Side-Loading Loader
+  Evasion Techniques:
+    - Hash-based API resolution (PEB walking)
+    - Direct syscall execution (EDR bypass)
+    - Minimal import table (3 functions only only)
+    - Custom position-dependent XOR encryption
+    - Malformed delay import directory (anti-analysis)
+    - No embedded PE signatures (fully encrypted payload)
+  Capabilities:
+    - File creation (NtCreateFile)
+    - File writing (NtWriteFile)
+    - Process spawning (NtCreateUserProcess)
+    - DLL loading (LdrLoadDll)
+    - Object waiting (NtWaitForSingleObject)
+    - Sleep/delay (NtDelayExecution)
+  Delivery: USB drive (DLL sideloading via infected shortcut)
+
+--- IOCs ---
+  dll_name: idll.dll
+  export_name: IdllEntry
+  pe_timestamp: 0x0
+  pe_timestamp_date: 2026-01-29 10:42:10
+  file_size_approx: 12.6 MB
+  md5: dbd8dbecaa80795c135137d69921fdba
+  sha256: e60ab99da105ee27ee09ea64ed8eb46d8edc92ee37f039dbc3e2bb9f587a33ba
+  api_hash_seed: 0xe7A1
+  api_hash_multiplier: 0x21
+  section_data_entropy_range: 7.07-7.31

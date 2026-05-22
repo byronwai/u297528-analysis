@@ -1,0 +1,88 @@
+======================================================================
+  DECRYPTION SUCCESS - FINAL REPORT
+  File: u297528.dat (idll.dll) -> decrypted_payload.exe
+  Date: 2026-05-21
+======================================================================
+
+DECRYPTION METHOD
+  Algorithm: AES-256-CBC
+  Key (32 bytes): b1fa3fd02d8ec02302cf4ce7a46957f76eaaa7c5a73b3d2cb6bcb4a322593180
+  IV  (16 bytes): 815f73d17e0ab351296629a197d378a5
+  Payload offset: .data+0x57c120
+  Payload size: 7,144,464 bytes (6.81 MB)
+
+KEY DISCOVERY PROCESS
+  1. Reverse-engineered the position-dependent XOR cipher at 0x180001a10
+     Formula: constant[i] = (0x3D * (i + 1)) & 0xFF
+     XOR: decoded[i] = (key_byte XOR data[i]) XOR constant[i]
+  
+  2. Disassembled IdllEntry (0x180002840) and traced function calls:
+     - XOR decrypt function at 0x180001a10 (substitution table decode)
+     - AES key expansion at 0x1800010d0 (with S-box at 0x180004020)
+     - AES-256-CBC decrypt at 0x180001000
+  
+  3. Located AES key and IV via LEA instructions in IdllEntry:
+     - lea r8, [rip+0x57dffa]  -> 0x180581108 (IV/nonce data)
+     - lea rdx, [rip+0x57dfd3] -> 0x1805810e8 (AES key)
+     - lea rdx, [rip+0x57dfea] -> 0x180581120 (encrypted payload)
+     - mov r8d, 0x6d0410 (payload size)
+
+  4. Confirmed standard AES S-box at .rdata+0x20 (RVA 0x4020)
+     and inverse S-box at .rdata+0x120 (RVA 0x4120)
+
+DECRYPTED PAYLOAD
+  Type: PE32+ executable (x86-64), Windows GUI
+  Timestamp: 0x697b3902 (2026-01-29)
+  Entry Point: 0xa304
+  Image Base: 0x140000000
+  Sections (7):
+    .text    : VA=0x1000, VSize=0x23c9c (144 KB)
+    .rdata   : VA=0x25000, VSize=0x6a7bb2 (6.7 MB) - contains 18 embedded PE files!
+    .data    : VA=0x6cd000, VSize=0x2a9c
+    .pdata   : VA=0x6d0000, VSize=0x2388
+    .fptable : VA=0x6d3000, VSize=0x100
+    .rsrc    : VA=0x6d4000, VSize=0x1e8
+    .reloc   : VA=0x6d5000, VSize=0x968
+
+  Imports:
+    KERNEL32.dll (95 functions) - file/process/memory operations
+    ADVAPI32.dll (3 functions) - registry operations
+    ole32.dll (3 functions) - COM object creation
+    OLEAUT32.dll (3 functions) - OLE automation
+
+  Notable: .rdata contains 18 embedded PE files (MZ signatures found)
+           Likely a dropper that extracts and runs multiple payloads
+
+FILE HASHES
+  Original DLL (u297528.dat):
+    MD5:  dbd8dbecaa80795c135137d69921fdba
+    SHA256: e60ab99da105ee27ee09ea64ed8eb46d8edc92ee37f039dbc3e2bb9f587a33ba
+  
+  Decrypted payload (decrypted_payload.exe):
+    MD5:  e10a9bb09acb415e5dc8654b8593a45c
+    SHA256: d59e83b0be737896dec8b91c7a52f87e16f83e911af52826b98481b5c50f32b2
+
+YARA RULES
+  All 5 rules match the original DLL:
+    idll_dll_loader - IdllEntry export + idll.dll name
+    idll_dll_syscall_stubs - 6 direct syscall stubs (0F 05 C3)
+    idll_dll_peb_walker - PEB walking + hash resolution
+    idll_dll_xor_decrypt - Position-dependent XOR constants
+    idll_dll_minimal_imports_and_large_data - 3 imports + 12.5MB .data
+
+GENERATED FILES
+  yara_rules.yar - YARA detection rules
+  yara_results.txt - YARA match details
+  idllentry_disasm.txt - IdllEntry full disassembly (881 lines)
+  decrypted_payload.exe - Fully decrypted PE (6.81 MB)
+  decryption_results.json - Structured decryption metadata
+  decryption_deep_analysis.json - Deep analysis data
+  decoded_substitution_table.bin - Decoded XOR table (64KB)
+  payload_xor_decoded.bin - XOR-decoded payload sample (1MB)
+
+NEXT STEPS
+  1. Analyze the 18 embedded PE files in the decrypted payload's .rdata
+  2. Submit decrypted_payload.exe to VirusTotal for identification
+  3. Run the decrypted payload in a sandbox (CAPE/Cuckoo) for behavioral analysis
+  4. Write YARA rules for the decrypted payload and embedded files
+  5. Check for C2 communication patterns in the payload

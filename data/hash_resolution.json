@@ -1,0 +1,109 @@
+{
+  "hash_database_size": 586,
+  "resolved_matches": {
+    "1767606647": "Func: NtCreateFile",
+    "1299816398": "Func: NtWriteFile",
+    "2219597401": "Func: NtClose",
+    "2191741528": "Func: NtWaitForSingleObject",
+    "1114870502": "Func: NtDelayExecution",
+    "3950647925": "Func: NtCreateUserProcess",
+    "1079522057": "DLL(Upper): ntdll.dll"
+  },
+  "unresolved_func_hashes": [
+    2191741528,
+    1114870502,
+    3950647925,
+    2034663767,
+    2007231792,
+    1412800703,
+    3467645858
+  ],
+  "unresolved_dll_hashes": [
+    1187659015,
+    1079522057
+  ],
+  "likely_candidates": {
+    "2191741528": {
+      "candidates": [
+        "NtWaitForSingleObject (for process monitoring)",
+        "NtProtectVirtualMemory (for memory permission change)",
+        "NtOpenFile (for opening existing file)"
+      ],
+      "storage": "[0x180c51540]",
+      "purpose": "syscall for waiting/protection/file opening"
+    },
+    "1114870502": {
+      "candidates": [
+        "NtDelayExecution (for sleep/timing)",
+        "NtFreeVirtualMemory (for cleanup)",
+        "NtSetInformationProcess (for process manipulation)"
+      ],
+      "storage": "[0x180c51544]",
+      "purpose": "syscall for delay/memory cleanup/process info"
+    },
+    "3950647925": {
+      "candidates": [
+        "NtCreateUserProcess (for spawning child process)",
+        "NtOpenProcessToken (for token manipulation)",
+        "NtAllocateVirtualMemory (for memory allocation)"
+      ],
+      "storage": "[0x180c5153c]",
+      "purpose": "syscall for process creation/token/memory"
+    },
+    "2034663767": {
+      "candidates": [
+        "RtlInitUnicodeString (for string init)",
+        "LdrLoadDll (for DLL loading)",
+        "NtOpenProcess (for process access)"
+      ],
+      "storage": "[0x180c51548]",
+      "purpose": "function pointer - likely for DLL loading or process operations"
+    },
+    "2007231792": {
+      "candidates": [
+        "RtlAdjustPrivilege (for privilege escalation)",
+        "NtAdjustPrivilegesToken (for token adjustment)",
+        "LdrGetProcedureAddress (for function resolution)"
+      ],
+      "storage": "[0x180c51550]",
+      "purpose": "function pointer - likely for privilege/API resolution"
+    },
+    "1412800703": {
+      "candidates": [
+        "NtCreateSection (for shared memory)",
+        "NtMapViewOfSection (for memory mapping)",
+        "VirtualAlloc (for memory allocation)"
+      ],
+      "storage": "[0x180c51558]",
+      "purpose": "function pointer - likely for memory mapping"
+    },
+    "3467645858": {
+      "candidates": [
+        "NtWriteVirtualMemory (for memory writing)",
+        "NtCreateThreadEx (for thread creation)",
+        "RtlCreateUserThread (for remote thread)"
+      ],
+      "storage": "[0x180c51560]",
+      "purpose": "function pointer - likely for code injection"
+    },
+    "1187659015": {
+      "candidates": [
+        "NTDLL.DLL (via alternate Unicode encoding)",
+        "KERNEL32.DLL (via alternate path)",
+        "api-ms-win-core-synch API set"
+      ],
+      "purpose": "DLL hash - likely a core Windows module"
+    }
+  },
+  "algorithm_verification": {
+    "NtCreateFile": "0x695b8977",
+    "NtWriteFile": "0x4d799fce",
+    "NtClose": "0x844c5e59",
+    "KERNEL32_DLL_uppercase": "0xc19131f1",
+    "KERNEL32_DLL_lowercase": "0xc3f68b11",
+    "NTDLL_DLL_uppercase": "0x40583309",
+    "NTDLL_DLL_lowercase": "0x44513809",
+    "IDLL_DLL_uppercase": "0x143a8af0",
+    "IDLL_DLL_lowercase": "0x88a56fd0"
+  }
+}
